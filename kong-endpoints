@@ -1,0 +1,89 @@
+//kong with default path, healthcheck and endpoints with their methods.
+
+
+- name: pbpocrrouter
+    host: $KONG_CONF_PBPOCRROUTER_API_SERVICE_HOST
+    connect_timeout: 30000
+    read_timeout: 60000
+    write_timeout: 60000
+    retries: 1
+    port: 443
+    protocol: https
+    routes:
+      - name: pbpocrrouter-request-parsing
+        hosts:
+          - $KONG_CONF_PBPOCRROUTER_API_ROUTE_HOST
+        paths:
+          - ~/(?i)api/v1/pdf/request_parsing/?$
+        preserve_host: false
+        protocols:
+          - https
+          - http
+        methods:
+          - POST
+          - OPTIONS
+        regex_priority: 1
+        strip_path: false
+        https_redirect_status_code: 426
+      - name: pbpocrrouter-requests
+        hosts:
+          - $KONG_CONF_PBPOCRROUTER_API_ROUTE_HOST
+        paths:
+          - ~/(?i)api/v1/requests/.*
+        preserve_host: false
+        protocols:
+          - https
+          - http
+        methods:
+          - GET
+          - OPTIONS
+        regex_priority: 1
+        strip_path: false
+        https_redirect_status_code: 426
+      - name: pbpocrrouter-ready
+        hosts:
+          - $KONG_CONF_PBPOCRROUTER_API_ROUTE_HOST
+        paths:
+          - ~/(?i)v1/ready/?$
+        preserve_host: false
+        protocols:
+          - https
+          - http
+        methods:
+          - GET
+          - OPTIONS
+        regex_priority: 1
+        strip_path: false
+        https_redirect_status_code: 426
+      - name: pbpocrrouter-healthcheck
+        hosts:
+          - $KONG_CONF_PBPOCRROUTER_API_ROUTE_HOST
+        paths:
+          - ~/(?i)v1/health/?$
+        preserve_host: false
+        protocols:
+          - https
+          - http
+        methods:
+          - GET
+          - OPTIONS
+        regex_priority: 1
+        strip_path: false
+        https_redirect_status_code: 426
+      - name: default-root-pbpocrrouter-api
+        hosts:
+          - $KONG_CONF_PBPOCRROUTER_API_ROUTE_HOST
+        paths:
+          - /
+        preserve_host: false
+        protocols:
+          - https
+          - http
+        methods:
+          - POST
+          - GET
+          - PUT
+          - OPTIONS
+        regex_priority: 0
+        strip_path: false
+        https_redirect_status_code: 426
