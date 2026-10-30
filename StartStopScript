@@ -1,0 +1,219 @@
+pipeline {
+    agent any
+
+    parameters {
+        choice(
+            name: 'ACTION',
+            choices: ['start', 'stop'],
+            description: 'Start/Stop the selected service(s)'
+        )
+        booleanParam(
+            name: 'PBPINVESTMENTLOGGINGAPI_PREPROD',
+            defaultValue: false,
+            description: 'pbpinvestmentloggingapi-preprod-svc'
+        )
+        booleanParam(
+            name: 'PBPINVESTMENTCOREAPI_PREPROD',
+            defaultValue: false,
+            description: 'pbpinvestmentcoreapi-preprod-svc'
+        )
+        booleanParam(
+            name: 'PBPINVESTMENTONESBAPI_PREPROD',
+            defaultValue: false,
+            description: 'pbpinvestmentonesbapi-preprod-svc'
+        )
+        booleanParam(
+            name: 'PBPINVESTMENTRESTAPI_PREPROD',
+            defaultValue: false,
+            description: 'pbpinvestmentrestapi-preprod-svc'
+        )
+        booleanParam(
+            name: 'PBPINVESTMENTNXTUI_PREPROD',
+            defaultValue: false,
+            description: 'pbpinvestmentnxtui-preprod-svc'
+        )
+    }
+
+    environment {
+        ECS_CLUSTER = 'QA-Investment'
+        AWS_REGION  = 'ap-south-1'
+        START_COUNT = '1'
+    }
+
+    options {
+        disableConcurrentBuilds()
+        timeout(time: 60, unit: 'MINUTES')
+    }
+
+    // NOTE: This job is manual only (on-demand start/stop).
+    // The Mon-Fri 09:00 / nightly 21:00 IST schedule is handled by Application
+    // Auto Scaling scheduled actions on each ECS service, not by a Jenkins
+    // trigger.
+
+    stages {
+        stage('Resolve Selection') {
+            steps {
+                script {
+                    // Canonical dependency order: APIs first, UI last.
+                    // Tick any combination of these; order below is always honoured.
+                    def catalog = [
+                        'pbpinvestmentloggingapi-preprod-svc': params.PBPINVESTMENTLOGGINGAPI_PREPROD,
+                        'pbpinvestmentcoreapi-preprod-svc'   : params.PBPINVESTMENTCOREAPI_PREPROD,
+                        'pbpinvestmentonesbapi-preprod-svc'  : params.PBPINVESTMENTONESBAPI_PREPROD,
+                        'pbpinvestmentrestapi-preprod-svc'   : params.PBPINVESTMENTRESTAPI_PREPROD,
+                        'pbpinvestmentnxtui-preprod-svc'     : params.PBPINVESTMENTNXTUI_PREPROD,
+                    ]
+
+                    def selected = catalog.findAll { it.value }.collect { it.key }
+
+                    if (selected.isEmpty()) {
+                        error 'No service selected. Tick at least one service checkbox and run again.'
+                    }
+
+                    // Start follows dependency order; stop walks it in reverse so the
+                    // UI goes down before the APIs it depends on.
+                    if (params.ACTION == 'stop') {
+                        selected = selected.reverse()
+                    }
+
+                    env.SERVICE_LIST = selected.join(' ')
+
+                    def label
+                    if (selected.size() == catalog.size()) {
+                        label = 'all'
+                    } else if (selected.size() == 1) {
+                        label = selected[0]
+                    } else {
+                        label = "${selected.size()} services"
+                    }
+                    currentBuild.displayName = "#${env.BUILD_NUMBER} ${params.ACTION} ${label}"
+
+                    echo "Action: ${params.ACTION}"
+                    echo "Cluster: ${env.ECS_CLUSTER} | Region: ${env.AWS_REGION}"
+                    echo "Selected (${selected.size()}): ${env.SERVICE_LIST}"
+                }
+            }
+        }
+
+        stage('Update ECS Service') {
+            steps {
+                sh '''
+                    set -eu
+
+                    case "$ACTION" in
+                        start)
+                            MIN_CAPACITY="$START_COUNT"
+                            MAX_CAPACITY="$START_COUNT"
+                            DESIRED_COUNT="$START_COUNT"
+                            ;;
+                        stop)
+                            MIN_CAPACITY=0
+                            MAX_CAPACITY=0
+                            DESIRED_COUNT=0
+                            ;;
+                        *) echo "Unsupported ACTION: $ACTION" >&2; exit 1 ;;
+                    esac
+
+                    echo "Action: $ACTION | Cluster: $ECS_CLUSTER | Region: $AWS_REGION"
+                    echo "Services: $SERVICE_LIST"
+
+                    for SERVICE in $SERVICE_LIST; do
+                        echo ""
+                        echo "=================================================="
+                        echo "  $ACTION -> $SERVICE"
+                        echo "=================================================="
+
+                        RESOURCE_ID="service/$ECS_CLUSTER/$SERVICE"
+
+                        CURRENT_COUNT=$(aws ecs describe-services \
+                            --cluster "$ECS_CLUSTER" \
+                            --services "$SERVICE" \
+                            --region "$AWS_REGION" \
+                            --query 'services[0].desiredCount' \
+                            --output text \
+                            --no-cli-pager)
+
+                        if [ "$CURRENT_COUNT" = "None" ]; then
+                            echo "ECS service '$SERVICE' was not found in cluster '$ECS_CLUSTER'." >&2
+                            exit 1
+                        fi
+
+                        echo "Current: $CURRENT_COUNT | Target: $DESIRED_COUNT | Min/Max: $MIN_CAPACITY/$MAX_CAPACITY"
+
+                        # Only touch auto scaling when the service is registered as a scalable target.
+                        SCALABLE=$(aws application-autoscaling describe-scalable-targets \
+                            --service-namespace ecs \
+                            --scalable-dimension ecs:service:DesiredCount \
+                            --resource-ids "$RESOURCE_ID" \
+                            --region "$AWS_REGION" \
+                            --query 'length(ScalableTargets)' \
+                            --output text \
+                            --no-cli-pager)
+
+                        if [ "$SCALABLE" != "0" ]; then
+                            echo "Updating the Application Auto Scaling range..."
+                            aws application-autoscaling register-scalable-target \
+                                --service-namespace ecs \
+                                --scalable-dimension ecs:service:DesiredCount \
+                                --resource-id "$RESOURCE_ID" \
+                                --min-capacity "$MIN_CAPACITY" \
+                                --max-capacity "$MAX_CAPACITY" \
+                                --region "$AWS_REGION" \
+                                --no-cli-pager
+                        else
+                            echo "No scalable target registered for $RESOURCE_ID; skipping auto scaling update."
+                        fi
+
+                        if [ "$CURRENT_COUNT" != "$DESIRED_COUNT" ]; then
+                            aws ecs update-service \
+                                --cluster "$ECS_CLUSTER" \
+                                --service "$SERVICE" \
+                                --desired-count "$DESIRED_COUNT" \
+                                --region "$AWS_REGION" \
+                                --query 'service.{service:serviceName,desired:desiredCount,running:runningCount,pending:pendingCount}' \
+                                --output table \
+                                --no-cli-pager
+                        else
+                            echo "Desired count is already $DESIRED_COUNT; no update is required."
+                        fi
+
+                        echo "Waiting for '$SERVICE' to stabilize..."
+                        aws ecs wait services-stable \
+                            --cluster "$ECS_CLUSTER" \
+                            --services "$SERVICE" \
+                            --region "$AWS_REGION" \
+                            --no-cli-pager
+
+                        if [ "$SCALABLE" != "0" ]; then
+                            aws application-autoscaling describe-scalable-targets \
+                                --service-namespace ecs \
+                                --scalable-dimension ecs:service:DesiredCount \
+                                --resource-ids "$RESOURCE_ID" \
+                                --region "$AWS_REGION" \
+                                --query 'ScalableTargets[0].{resource:ResourceId,min:MinCapacity,max:MaxCapacity}' \
+                                --output table \
+                                --no-cli-pager
+                        fi
+
+                        aws ecs describe-services \
+                            --cluster "$ECS_CLUSTER" \
+                            --services "$SERVICE" \
+                            --region "$AWS_REGION" \
+                            --query 'services[0].{service:serviceName,status:status,desired:desiredCount,running:runningCount,pending:pendingCount}' \
+                            --output table \
+                            --no-cli-pager
+                    done
+                '''
+            }
+        }
+    }
+
+    post {
+        success {
+            echo "ECS service(s) '${env.SERVICE_LIST}' ${params.ACTION} completed successfully."
+        }
+        failure {
+            echo "ECS service(s) '${env.SERVICE_LIST}' ${params.ACTION} failed. Check the console output."
+        }
+    }
+}
