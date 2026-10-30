@@ -1,0 +1,44 @@
+//contains only the healthcheck and default path
+
+
+- name: pbpocrrouter
+    host: $KONG_CONF_PBPOCRROUTER_API_SERVICE_HOST
+    connect_timeout: 30000
+    read_timeout: 60000
+    write_timeout: 60000
+    retries: 1
+    port: 443
+    protocol: https
+    routes:
+      - name: pbpinvestmentonesbapi-Healthcheck
+        hosts:
+          - $KONG_CONF_PBPOCRROUTER_API_ROUTE_HOST
+        paths:
+          - ~/(?i)v1/health?$
+        preserve_host: false
+        protocols:
+          - https
+          - http
+        methods:
+          - GET
+          - OPTIONS
+        regex_priority: 1
+        strip_path: false
+        https_redirect_status_code: 426
+      - name: default-root-pbpinvestmentonesbapi
+        hosts:
+          - $KONG_CONF_PBPOCRROUTER_API_ROUTE_HOST
+        paths:
+          - ~/(?i)v1?$
+        preserve_host: false
+        protocols:
+          - https
+          - http
+        methods:
+          - PUT
+          - GET
+          - OPTIONS
+          - POST
+        regex_priority: 0
+        strip_path: false
+        https_redirect_status_code: 426
