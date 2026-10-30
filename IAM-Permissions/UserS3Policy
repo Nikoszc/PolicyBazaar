@@ -1,0 +1,25 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "GetPutAccessPbpAiBktQa",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:PutObject"
+      ],
+      "Resource": [
+        "arn:aws:s3:::pbp-ai-bkt-qa/*",
+        "arn:aws:s3:::pbp-ai-bkt-qa"
+      ],
+      "Condition": {
+        "StringLike": {
+          "aws:userId": [
+            "AROA6EQOOVEMJJCY65AZJ:name@policybazaar.com",
+            "AROA6EQOOVEMJJCY65AZJ:name@pbpartners.com"
+          ]
+        }
+      }
+    }
+  ]
+}
